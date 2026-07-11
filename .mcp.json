@@ -1,0 +1,21 @@
+{
+  "gpt-image": {
+    "command": "node",
+    "args": ["${PLUGIN_ROOT}/server/index.mjs"],
+    "env_vars": [
+      "GPT_IMAGE_API_KEY",
+      "GPT_IMAGE_BASE_URL",
+      "GPT_IMAGE_MODEL",
+      "GPT_IMAGE_RESPONSES_MODEL",
+      "GPT_IMAGE_API_MODE",
+      "GPT_IMAGE_USER_AGENT",
+      "GPT_IMAGE_OUTPUT_DIR",
+      "GPT_IMAGE_ALLOWED_ROOTS",
+      "GPT_IMAGE_TIMEOUT_MS",
+      "OPENAI_API_KEY",
+      "OPENAI_API_BASE_URL"
+    ],
+    "startup_timeout_sec": 20,
+    "tool_timeout_sec": 1200
+  }
+}

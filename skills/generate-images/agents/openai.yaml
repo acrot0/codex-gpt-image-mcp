@@ -1,0 +1,14 @@
+interface:
+  display_name: "Generate Images"
+  short_description: "Generate and edit images with your API"
+  default_prompt: "Use $generate-images to create an image with my configured API."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "gpt-image"
+      description: "Local GPT Image generation and editing tools"
+      transport: "stdio"
+
+policy:
+  allow_implicit_invocation: true

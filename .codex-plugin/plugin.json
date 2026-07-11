@@ -1,0 +1,34 @@
+{
+  "name": "gpt-image-mcp",
+  "version": "0.1.0",
+  "description": "Generate and edit images in Codex through configurable OpenAI-compatible Images or Responses APIs.",
+  "author": {
+    "name": "Xuan-BOMS"
+  },
+  "license": "MIT",
+  "keywords": [
+    "image-generation",
+    "image-editing",
+    "mcp",
+    "gpt-image-2"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "GPT Image MCP",
+    "shortDescription": "Generate images with your configured API.",
+    "longDescription": "Adds Codex-callable image generation and editing backed by OpenAI-compatible Images or Responses APIs, with local originals and lightweight inline previews.",
+    "developerName": "Xuan-BOMS",
+    "category": "Productivity",
+    "capabilities": [
+      "Image generation",
+      "Image editing",
+      "Local file output"
+    ],
+    "defaultPrompt": [
+      "Generate a polished image with my configured image API.",
+      "Edit this local image while preserving everything else.",
+      "Check whether my image API is configured correctly."
+    ]
+  }
+}

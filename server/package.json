@@ -1,0 +1,17 @@
+{
+  "name": "gpt-image-mcp-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node test-protocol.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.5",
+    "openai": "^6.34.0",
+    "sharp": "^0.34.3"
+  }
+}
