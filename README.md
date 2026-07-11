@@ -99,7 +99,9 @@ env_vars = [
   "GPT_IMAGE_USER_AGENT",
   "GPT_IMAGE_OUTPUT_DIR",
   "GPT_IMAGE_ALLOWED_ROOTS",
-  "GPT_IMAGE_TIMEOUT_MS"
+  "GPT_IMAGE_TIMEOUT_MS",
+  "OPENAI_API_KEY",
+  "OPENAI_API_BASE_URL"
 ]
 startup_timeout_sec = 20
 tool_timeout_sec = 1200
@@ -262,7 +264,9 @@ env_vars = [
   "GPT_IMAGE_USER_AGENT",
   "GPT_IMAGE_OUTPUT_DIR",
   "GPT_IMAGE_ALLOWED_ROOTS",
-  "GPT_IMAGE_TIMEOUT_MS"
+  "GPT_IMAGE_TIMEOUT_MS",
+  "OPENAI_API_KEY",
+  "OPENAI_API_BASE_URL"
 ]
 startup_timeout_sec = 20
 tool_timeout_sec = 1200
