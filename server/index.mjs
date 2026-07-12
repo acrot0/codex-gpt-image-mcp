@@ -19,6 +19,13 @@ const DEFAULT_RESPONSES_MODEL = "gpt-5.6";
 const DEFAULT_TIMEOUT_MS = 20 * 60 * 1000;
 const MAX_INPUT_BYTES = 50 * 1024 * 1024;
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
+const MIME_TYPES = {
+  gif: "image/gif",
+  jpeg: "image/jpeg",
+  jpg: "image/jpeg",
+  png: "image/png",
+  webp: "image/webp",
+};
 
 const generateSchema = {
   type: "object",
@@ -402,9 +409,11 @@ async function readInputImage(rawPath, current, label) {
   if (!stat.isFile()) throw new Error(`${label} is not a file.`);
   if (stat.size > MAX_INPUT_BYTES) throw new Error(`${label} exceeds 50 MB.`);
   const buffer = await fs.readFile(filePath);
-  const mimeType = extension === ".jpg" || extension === ".jpeg" ? "image/jpeg" : `image/${extension.slice(1)}`;
+  const metadata = await sharp(buffer, { animated: true }).metadata();
+  const mimeType = MIME_TYPES[metadata.format];
+  if (!mimeType) throw new Error(`${label} is not a supported image format.`);
   return {
-    file: await toFile(buffer, path.basename(filePath)),
+    file: await toFile(buffer, path.basename(filePath), { type: mimeType }),
     dataURL: `data:${mimeType};base64,${buffer.toString("base64")}`,
   };
 }

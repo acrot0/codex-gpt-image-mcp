@@ -138,6 +138,12 @@ try {
   if (!responseBodies.some((body) => body.tools?.[0]?.action === "edit" && body.input?.[0]?.content?.some((item) => item.type === "input_image"))) {
     throw new Error("Responses edit request did not include the input image.");
   }
+  if (!responseBodies.some((body) => body.input?.[0]?.content?.some((item) => item.type === "input_image" && item.image_url.startsWith("data:image/png;base64,")))) {
+    throw new Error("Responses edit request did not preserve the PNG MIME type.");
+  }
+  if (!requests.some((request) => request.url.endsWith("/v1/images/edits") && request.body.includes(Buffer.from("Content-Type: image/png")))) {
+    throw new Error("Images edit request did not preserve the PNG MIME type.");
+  }
 
   process.stdout.write(`${JSON.stringify({ ok: true, tools, routes: calledPaths })}\n`);
 } finally {
