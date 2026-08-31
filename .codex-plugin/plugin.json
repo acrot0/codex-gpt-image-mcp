@@ -1,6 +1,6 @@
 {
   "name": "gpt-image-mcp",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Generate and edit images in Codex through configurable OpenAI-compatible Images or Responses APIs.",
   "author": {
     "name": "Xuan-BOMS"
