@@ -13,11 +13,13 @@ import OpenAI, { toFile } from "openai";
 import sharp from "sharp";
 
 const SERVER_NAME = "gpt-image";
-const SERVER_VERSION = "0.1.0";
+const SERVER_VERSION = "0.1.2";
 const DEFAULT_MODEL = "gpt-image-2";
 const DEFAULT_RESPONSES_MODEL = "gpt-5.6";
 const DEFAULT_TIMEOUT_MS = 20 * 60 * 1000;
 const MAX_INPUT_BYTES = 50 * 1024 * 1024;
+const MAX_IMAGE_BYTES = 50 * 1024 * 1024;
+const IMAGE_DOWNLOAD_TIMEOUT_MS = 2 * 60 * 1000;
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
 const MIME_TYPES = {
   gif: "image/gif",
@@ -124,7 +126,33 @@ function isWithin(candidate, root) {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-function assertAllowedPath(rawPath, roots, label) {
+async function canonicalPath(value) {
+  let cursor = path.resolve(value);
+  const suffix = [];
+  while (true) {
+    try {
+      return path.join(await fs.realpath(cursor), ...suffix);
+    } catch (error) {
+      if (error?.code !== "ENOENT" && error?.code !== "ENOTDIR") throw error;
+      try {
+        const info = await fs.lstat(cursor);
+        if (info.isSymbolicLink()) {
+          throw new Error("path contains a dangling symbolic link");
+        }
+      } catch (inspectError) {
+        if (inspectError?.code !== "ENOENT" && inspectError?.code !== "ENOTDIR") {
+          throw inspectError;
+        }
+      }
+      const parent = path.dirname(cursor);
+      if (parent === cursor) return path.resolve(value);
+      suffix.unshift(path.basename(cursor));
+      cursor = parent;
+    }
+  }
+}
+
+async function assertAllowedPath(rawPath, roots, label) {
   if (typeof rawPath !== "string" || !rawPath.trim()) {
     throw new Error(`${label} must be a non-empty path.`);
   }
@@ -132,7 +160,12 @@ function assertAllowedPath(rawPath, roots, label) {
   if (!roots.some((root) => isWithin(resolved, root))) {
     throw new Error(`${label} is outside the configured allowed roots.`);
   }
-  return resolved;
+  const candidate = await canonicalPath(resolved);
+  const canonicalRoots = await Promise.all(roots.map((root) => canonicalPath(root)));
+  if (!canonicalRoots.some((root) => isWithin(candidate, root))) {
+    throw new Error(`${label} resolves outside the configured allowed roots.`);
+  }
+  return candidate;
 }
 
 function requiredString(value, label) {
@@ -242,21 +275,82 @@ async function generateWithResponses(api, current, options) {
   };
 }
 
-async function imageBuffer(item) {
-  if (item?.b64_json) return Buffer.from(item.b64_json, "base64");
-  if (item?.url) {
-    const response = await fetch(item.url);
-    if (!response.ok) throw new Error(`Image download failed with HTTP ${response.status}.`);
-    return Buffer.from(await response.arrayBuffer());
+function decodeBase64Image(value) {
+  if (typeof value !== "string" || !value) {
+    throw new Error("The image API returned an empty base64 image.");
   }
+  const maxEncodedLength = Math.ceil(MAX_IMAGE_BYTES * 4 / 3) + 4;
+  if (value.length > maxEncodedLength) {
+    throw new Error(`The image API returned an image larger than ${Math.floor(MAX_IMAGE_BYTES / 1024 / 1024)} MB.`);
+  }
+  const buffer = Buffer.from(value, "base64");
+  if (buffer.length > MAX_IMAGE_BYTES) {
+    throw new Error(`The image API returned an image larger than ${Math.floor(MAX_IMAGE_BYTES / 1024 / 1024)} MB.`);
+  }
+  return buffer;
+}
+
+async function downloadImage(url) {
+  if (typeof url !== "string" || url.length > 8192) {
+    throw new Error("The image API returned an invalid image URL.");
+  }
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error("The image API returned an invalid image URL.");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("The image API returned an unsupported image URL.");
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), IMAGE_DOWNLOAD_TIMEOUT_MS);
+  let response;
+  try {
+    response = await fetch(parsed, { signal: controller.signal, redirect: "error" });
+    if (!response.ok) throw new Error(`Image download failed with HTTP ${response.status}.`);
+    const declaredLength = response.headers.get("content-length");
+    if (declaredLength !== null && Number(declaredLength) > MAX_IMAGE_BYTES) {
+      throw new Error(`Downloaded image exceeds ${Math.floor(MAX_IMAGE_BYTES / 1024 / 1024)} MB.`);
+    }
+    if (!response.body) throw new Error("Image download returned an empty body.");
+
+    const chunks = [];
+    let total = 0;
+    try {
+      for await (const chunk of response.body) {
+        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        total += bytes.length;
+        if (total > MAX_IMAGE_BYTES) {
+          throw new Error(`Downloaded image exceeds ${Math.floor(MAX_IMAGE_BYTES / 1024 / 1024)} MB.`);
+        }
+        chunks.push(bytes);
+      }
+    } catch (error) {
+      try { await response.body.cancel(); } catch {}
+      throw error;
+    }
+    if (total === 0) throw new Error("Image download returned an empty body.");
+    return Buffer.concat(chunks, total);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function imageBuffer(item) {
+  if (item?.b64_json) return decodeBase64Image(item.b64_json);
+  if (item?.url) return downloadImage(item.url);
   throw new Error("The image API returned neither b64_json nor a URL.");
 }
 
 async function saveResults(data, options) {
   const current = config();
-  const outputDir = options.outputDir
-    ? assertAllowedPath(options.outputDir, current.allowedRoots, "output_dir")
-    : current.outputDir;
+  const outputDir = await assertAllowedPath(
+    options.outputDir || current.outputDir,
+    current.allowedRoots,
+    "output_dir",
+  );
   await fs.mkdir(outputDir, { recursive: true });
 
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -402,13 +496,10 @@ async function handleGenerate(args = {}) {
 }
 
 async function readInputImage(rawPath, current, label) {
-  const filePath = assertAllowedPath(rawPath, current.allowedRoots, label);
+  const filePath = await assertAllowedPath(rawPath, current.allowedRoots, label);
   const extension = path.extname(filePath).toLowerCase();
   if (!IMAGE_EXTENSIONS.has(extension)) throw new Error(`${label} must be PNG, JPEG, WebP, or GIF.`);
-  const stat = await fs.stat(filePath);
-  if (!stat.isFile()) throw new Error(`${label} is not a file.`);
-  if (stat.size > MAX_INPUT_BYTES) throw new Error(`${label} exceeds 50 MB.`);
-  const buffer = await fs.readFile(filePath);
+  const buffer = await readFileCapped(filePath, MAX_INPUT_BYTES, label);
   const metadata = await sharp(buffer, { animated: true }).metadata();
   const mimeType = MIME_TYPES[metadata.format];
   if (!mimeType) throw new Error(`${label} is not a supported image format.`);
@@ -416,6 +507,39 @@ async function readInputImage(rawPath, current, label) {
     file: await toFile(buffer, path.basename(filePath), { type: mimeType }),
     dataURL: `data:${mimeType};base64,${buffer.toString("base64")}`,
   };
+}
+
+async function readFileCapped(filePath, maxBytes, label) {
+  const handle = await fs.open(filePath, "r");
+  try {
+    const observed = await fs.realpath(filePath);
+    if (path.resolve(observed).toLowerCase() !== path.resolve(filePath).toLowerCase()) {
+      throw new Error(`${label} changed while opening.`);
+    }
+    const info = await handle.stat();
+    if (!info.isFile()) throw new Error(`${label} is not a file.`);
+    if (info.size > maxBytes) throw new Error(`${label} exceeds 50 MB.`);
+
+    const chunks = [];
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    let total = 0;
+    while (total <= maxBytes) {
+      const remaining = maxBytes + 1 - total;
+      const { bytesRead } = await handle.read(
+        buffer,
+        0,
+        Math.min(buffer.length, remaining),
+        null,
+      );
+      if (bytesRead === 0) break;
+      total += bytesRead;
+      if (total > maxBytes) throw new Error(`${label} exceeds 50 MB.`);
+      chunks.push(Buffer.from(buffer.subarray(0, bytesRead)));
+    }
+    return Buffer.concat(chunks, total);
+  } finally {
+    await handle.close().catch(() => {});
+  }
 }
 
 async function editWithResponses(api, current, options) {

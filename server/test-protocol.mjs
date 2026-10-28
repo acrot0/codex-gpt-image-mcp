@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { rmSync, unlinkSync } from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -10,7 +11,25 @@ import sharp from "sharp";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const serverPath = path.join(here, "index.mjs");
+const MAX_TEST_INPUT_BYTES = 50 * 1024 * 1024;
 const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "gpt-image-mcp-test-"));
+// Keep this fixture outside the test user's home; the server always allows
+// os.homedir(), so a temp-root junction would not exercise the escape check.
+const outsideDir = await fs.mkdtemp(path.resolve(here, "../../../.tmp", "gpt-image-mcp-outside-"));
+const junctions = new Set();
+const cleanupDirs = () => {
+  for (const link of junctions) {
+    try {
+      unlinkSync(link);
+    } catch {}
+  }
+  for (const dir of [outputDir, outsideDir]) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {}
+  }
+};
+process.once("exit", cleanupDirs);
 const inputPath = path.join(outputDir, "input.png");
 const image = await sharp({
   create: { width: 8, height: 8, channels: 4, background: "#4a90e2" },
@@ -18,18 +37,36 @@ const image = await sharp({
 await fs.writeFile(inputPath, image);
 
 const requests = [];
+let downloadURL = "";
 const mockApi = http.createServer((request, response) => {
   const chunks = [];
   request.on("data", (chunk) => chunks.push(chunk));
   request.on("end", () => {
     const body = Buffer.concat(chunks);
     requests.push({ method: request.method, url: request.url, body });
+    if (request.url === "/download/oversized") {
+      response.writeHead(200, {
+        "content-type": "image/png",
+        "content-length": String(MAX_TEST_INPUT_BYTES + 1),
+      });
+      response.end();
+      return;
+    }
     if (request.url.startsWith("/fallback/v1/images/")) {
       response.writeHead(404, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: { message: "route not found" } }));
       return;
     }
     response.writeHead(200, { "content-type": "application/json" });
+    let prompt = "";
+    try {
+      const parsed = JSON.parse(body.toString("utf8"));
+      prompt = typeof parsed.prompt === "string" ? parsed.prompt : "";
+    } catch {}
+    if (prompt === "download-cap-test") {
+      response.end(JSON.stringify({ data: [{ url: downloadURL }] }));
+      return;
+    }
     if (request.url.endsWith("/v1/responses")) {
       response.end(JSON.stringify({
         id: `resp_${requests.length}`,
@@ -57,6 +94,7 @@ await new Promise((resolve, reject) => {
 const address = mockApi.address();
 const baseURL = `http://127.0.0.1:${address.port}/v1`;
 const fallbackBaseURL = `http://127.0.0.1:${address.port}/fallback/v1`;
+downloadURL = `http://127.0.0.1:${address.port}/download/oversized`;
 
 async function runMode(mode, apiBaseURL = baseURL) {
   const transport = new StdioClientTransport({
@@ -107,6 +145,92 @@ async function runMode(mode, apiBaseURL = baseURL) {
     const generatedPath = generated.structuredContent?.files?.[0]?.path;
     const editedPath = edited.structuredContent?.files?.[0]?.path;
     await Promise.all([fs.access(generatedPath), fs.access(editedPath)]);
+
+    const escapePath = path.join(outputDir, `escape-${mode}-${process.pid}`);
+    junctions.add(escapePath);
+    await fs.symlink(outsideDir, escapePath, "junction");
+    try {
+      const requestCount = requests.length;
+      const escaped = await client.callTool({
+        name: "edit_image",
+        arguments: {
+          prompt: "must not be sent",
+          input_paths: [path.join(escapePath, "outside.png")],
+          output_name: `escape-${mode}`,
+        },
+      });
+      if (!escaped.isError) {
+        throw new Error(`${mode} mode accepted an input path through an external junction.`);
+      }
+      const message = escaped.content
+        ?.filter((item) => item?.type === "text" && typeof item.text === "string")
+        .map((item) => item.text)
+        .join("\n") || "";
+      if (!message.includes("resolves outside the configured allowed roots")) {
+        throw new Error(`${mode} mode rejected the junction for an unexpected reason.`);
+      }
+      if (requests.length !== requestCount) {
+        throw new Error(`${mode} mode contacted the API after rejecting an external junction.`);
+      }
+    } finally {
+      await fs.unlink(escapePath).catch(() => {});
+      junctions.delete(escapePath);
+    }
+
+    if (mode === "images") {
+      const oversizePath = path.join(outputDir, "oversize.png");
+      await fs.writeFile(oversizePath, "");
+      await fs.truncate(oversizePath, MAX_TEST_INPUT_BYTES + 1);
+      try {
+        const requestCount = requests.length;
+        const oversized = await client.callTool({
+          name: "edit_image",
+          arguments: {
+            prompt: "must not be sent",
+            input_paths: [oversizePath],
+            output_name: "oversize",
+          },
+        });
+        if (!oversized.isError) {
+          throw new Error("images mode accepted an input larger than 50 MB.");
+        }
+        const message = oversized.content
+          ?.filter((item) => item?.type === "text" && typeof item.text === "string")
+          .map((item) => item.text)
+          .join("\n") || "";
+        if (!message.includes("exceeds 50 MB")) {
+          throw new Error("images mode rejected the oversized input for an unexpected reason.");
+        }
+        if (requests.length !== requestCount) {
+          throw new Error("images mode contacted the API after rejecting an oversized input.");
+        }
+      } finally {
+        await fs.unlink(oversizePath).catch(() => {});
+      }
+
+      const requestCount = requests.length;
+      const downloadCapped = await client.callTool({
+        name: "generate_image",
+        arguments: {
+          prompt: "download-cap-test",
+          output_name: "download-cap-test",
+          include_preview: false,
+        },
+      });
+      if (!downloadCapped.isError) {
+        throw new Error("images mode accepted an oversized downloaded image.");
+      }
+      const message = downloadCapped.content
+        ?.filter((item) => item?.type === "text" && typeof item.text === "string")
+        .map((item) => item.text)
+        .join("\n") || "";
+      if (!message.includes("Downloaded image exceeds 50 MB")) {
+        throw new Error("images mode rejected the oversized download for an unexpected reason.");
+      }
+      if (requests.length !== requestCount + 2) {
+        throw new Error("images mode did not stop after the oversized download response.");
+      }
+    }
     return actual;
   } finally {
     await client.close().catch(() => {});
@@ -149,4 +273,5 @@ try {
 } finally {
   await new Promise((resolve) => mockApi.close(resolve));
   await fs.rm(outputDir, { recursive: true, force: true });
+  await fs.rm(outsideDir, { recursive: true, force: true });
 }

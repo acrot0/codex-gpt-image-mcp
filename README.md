@@ -48,7 +48,7 @@
 ### 环境要求
 
 - Codex CLI 或 Codex 桌面端
-- Node.js 20 或更高版本
+- Node.js 22 或更高版本
 - 一个支持 Images API 或 Responses `image_generation` 的 OpenAI 兼容 API
 
 ### 快速安装
@@ -229,7 +229,7 @@ It supports the Images API, the Responses API `image_generation` tool, and an `a
 ### Requirements
 
 - Codex CLI or Codex Desktop
-- Node.js 20+
+- Node.js 22+
 - An OpenAI-compatible API supporting Images or Responses image generation
 
 ### Quick start
